@@ -14,7 +14,7 @@ KUBELET_HOSTNAME="--hostname-override={{ inventory_hostname }}"
 KUBELET_API_SERVER="--api-servers=http://{{ master_ip_port }}"
 
 # Add your own!
-KUBELET_ARGS="--pod-infra-container-image=docker.repo:5000/kube/pause:0.8.0 \
+KUBELET_ARGS="--pod-infra-container-image=docker.repo:5000/kube/pause-ppc64le:3.0 \
               --register-node=true \
               --cluster-dns={{ skydns_ip }} \
               --cluster-domain=cluster.local --config=/etc/kubernetes/manifests"
