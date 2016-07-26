@@ -1,0 +1,171 @@
+---
+- hosts: all
+  vars:
+    master_ip_port: 172.16.3.99:8080
+    etcd_ip_port: 172.16.3.99:4001
+    skydns_ip: 10.254.53.53
+    flannel_etcd_subnet: 10.20.0.0/16
+    fileserver_url: http://172.16.0.205:8080
+  become: yes
+  become_method: sudo
+  tasks:
+
+    # First, disable firewalld  
+    - name: Disabled firewalld
+      service: name=firewalld enabled=no state=stopped
+
+
+    # all node  
+    - name: Download kubernetes pkgs to all node
+      get_url: url={{ fileserver_url }}/{{ item }} dest=/tmp
+      with_items:
+        - docker-io-1.9.1.rpm
+        - flannel-0.5.5-5.rpm
+        - kubernetes-client-1.2-0.26.rpm
+        - kubernetes-node-1.2-0.26.rpm
+
+
+    - name: Install kubernetes node pkgs 
+      yum: name=/tmp/{{ item }}
+      with_items:
+        - kubernetes-client-1.2-0.26.rpm
+        - kubernetes-node-1.2-0.26.rpm
+        - docker-io-1.9.1.rpm
+        - flannel-0.5.5-5.rpm
+
+
+    - name: Copy config file for kubernetes node
+      template: src={{ item }} dest=/etc/kubernetes
+      with_items:
+          - config
+          - kubelet
+          
+    - name: Copy flannel config file 
+      template: src=flanneld dest=/etc/sysconfig/flanneld
+
+    - name: Copy docker sub config file from flanneld 
+      template: src=flannel.conf dest=/usr/lib/systemd/system/docker.service.d/flannel.conf
+      notify:
+        - Daemon-reload
+
+
+   # master  node
+    - name: Download kubernetes master node pkgs
+      get_url: url={{ fileserver_url }}/{{ item }} dest=/tmp
+      with_items:
+        - kubernetes-master-1.2-0.26.rpm 
+        - etcd-2.2.5-5.ael7b.ppc64le.rpm
+      when: "inventory_hostname in groups['master']"
+
+    - name: Install kubernetes master node pkgs
+      yum: name=/tmp/{{ item }}
+      with_items:
+        - kubernetes-master-1.2-0.26.rpm 
+        - etcd-2.2.5-5.ael7b.ppc64le.rpm
+      when: "inventory_hostname in groups['master']"
+
+    - name: Copy etcd config file 
+      template: src=etcd.conf dest=/etc/etcd/
+      when: "inventory_hostname in groups['master']"
+
+    - name: Enable etcd
+      service: name=etcd enabled=yes state=restarted
+      when: "inventory_hostname in groups['master']"
+
+    - shell: etcdctl ls | grep atomic.io
+      register: result
+      when: "inventory_hostname in groups['master']"
+
+    - name: Config etcd for flannel
+      raw: etcdctl set /atomic.io/network/config '{"Network":"{{ flannel_etcd_subnet }}", "Backend":{"Type":"vxlan"}}'
+      when: "inventory_hostname in groups['master'] and result.rc != 0"
+
+    - name: Copy config file for kubernetes master
+      template: src={{ item }} dest=/etc/kubernetes
+      with_items:
+          - apiserver
+          - config
+          - kubelet
+          - dns-addon.yaml
+          - kube-dashboard.yaml
+      when: "inventory_hostname in groups['master']"
+
+    - name: Modify master kebelet conf file
+      raw: sed -i -e 's/--register-node=true/--register-schedulable=false/' -e 's#cluster.local#&  --config=/etc/kubernetes/manifests#' /etc/kubernetes/kubelet
+      when: "inventory_hostname in groups['master']" 
+
+    # start service 
+    - name: Enable kubelet kube-proxy flanneld docker
+      service: name={{ item }} enabled=yes state=started
+      with_items:
+          - flanneld
+          - docker
+          - kube-proxy
+          - kubelet
+
+    - name: Enable master service
+      service: name={{ item }} enabled=yes state=started
+      with_items:
+          - kube-apiserver
+          - kube-controller-manager
+          - kube-scheduler
+      when: "inventory_hostname in groups['master']" 
+
+    # Install kube-dashboard.yaml
+    - name: Install dashboard
+      raw: kubectl create -f /etc/kubernetes/kube-dashboard.yaml
+      when: "inventory_hostname in groups['master']" 
+
+    # Install dns-addon
+    - name: Install skydns and kube2sky
+      raw: kubectl create -f /etc/kubernetes/dns-addon.yaml
+      when: "inventory_hostname in groups['master']" 
+
+  #  - name: Download skydns and kube2dns to master node
+  #    get_url: url={{ fileserver_url }}/{{ item }} dest=/usr/local/bin
+  #    with_items:
+  #      - skydns
+  #      - kube2dns
+  #    when: "inventory_hostname in groups['master']"
+
+  #    - name: Download systemd service script of skydns and kube2dns
+  #    get_url: url={{ fileserver_url }}/{{ item }} dest=/usr/lib/systemd/system
+  #    with_items:
+  #      - skydns.service
+  #      - kube2dns.service 
+  #    when: "inventory_hostname in groups['master']"
+
+  #    - name: Enable skydns and kube2dns service
+  #    service: name={{ item }} enabled=yes state=restarted
+  #    with_items:
+  #      - skydns
+  #      - kube2dns
+  #    when: "inventory_hostname in groups['master']"
+
+
+    # gluster install and config
+#    - name: Download gluster yum repo
+#      get_url: url={{ fileserver_url }}/config/yum.repo/glusterfs.repo dest=/etc/yum.repos.d
+#
+#    - name: Install glusterfs server
+#      yum: name=glusterfs-server state=present
+#      when: "inventory_hostname in groups['gluster']"
+#
+#    - name: Enable glusterd service
+#      service: name=glusterd enabled=yes state=restarted
+#      when: "inventory_hostname in groups['gluster']"
+#
+#    - name: Add dns hosts file
+#      get_url: url={{ fileserver_url }}/config/kube-ansible/etc-hosts dest=/etc/hosts
+#
+#    - name: Install glusterfs client
+#      yum: name={{ item }} state=present
+#      with_items:
+#        - glusterfs
+#        - glusterfs-fuse
+#
+
+
+  handlers:
+      - name: Daemon-reload
+        raw: systemctl daemon-reload    
